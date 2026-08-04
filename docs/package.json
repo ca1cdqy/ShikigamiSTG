@@ -1,0 +1,8 @@
+{
+  "name": "shikigamistg-docs",
+  "private": true,
+  "description": "Local documentation tooling for ShikigamiSTG",
+  "devDependencies": {
+    "docsify-cli": "4.4.4"
+  }
+}

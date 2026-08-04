@@ -1,0 +1,74 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.xmake/packages
+          key: ${{ runner.os }}-${{ runner.arch }}-xmake-${{ hashFiles('xmake.lua') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-xmake-
+
+      - name: Configure shared release build
+        run: xmake f -m release --shiki_shared=y --asset_tests=n -y
+
+      - name: Build framework
+        run: xmake build shiki
+
+      - name: Build resource-independent tests
+        run: xmake build tests
+
+      - name: Run resource-independent tests
+        run: xmake run tests
+
+      - name: Build example
+        run: xmake build th06
+
+  documentation:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+
+      - name: Assemble documentation
+        run: |
+          mkdir -p build/docs
+          cp -r docs/. build/docs/
+          doxygen Doxyfile
+          test -f build/docs/index.html
+          test -f build/docs/api/index.html
+

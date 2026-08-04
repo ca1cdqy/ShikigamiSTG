@@ -1,0 +1,133 @@
+name: Publish SDK Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version used in package names
+        required: true
+        default: v0.1.0-dev
+
+permissions:
+  contents: write
+
+jobs:
+  documentation:
+    name: Prepare documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+
+      - name: Generate documentation
+        run: |
+          mkdir -p build/docs
+          cp -r docs/. build/docs/
+          doxygen Doxyfile
+
+      - name: Upload documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-docs
+          path: build/docs/
+          if-no-files-found: error
+
+  package:
+    name: Package (${{ matrix.package_platform }}-${{ matrix.arch }})
+    needs: documentation
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            package_platform: windows
+            xmake_platform: windows
+            arch: x64
+          - os: ubuntu-latest
+            package_platform: linux
+            xmake_platform: linux
+            arch: x86_64
+          - os: macos-14
+            package_platform: macos
+            xmake_platform: macosx
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.xmake/packages
+          key: release-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: |
+            release-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Download documentation
+        uses: actions/download-artifact@v4
+        with:
+          name: release-docs
+          path: build/docs
+
+      - name: Configure shared release build
+        run: xmake f -m release -a ${{ matrix.arch }} --shiki_shared=y --asset_tests=n -y
+
+      - name: Build framework
+        run: xmake build shiki
+
+      - name: Build example
+        run: xmake build th06
+
+      - name: Package SDK
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            '${{ inputs.version }}'
+          } else {
+            '${{ github.ref_name }}'
+          }
+          python .github/workflows/package_release.py `
+            --target-dir "build/${{ matrix.xmake_platform }}/${{ matrix.arch }}/release" `
+            --docs "build/docs" `
+            --output "dist" `
+            --version $version `
+            --platform "${{ matrix.package_platform }}" `
+            --arch "${{ matrix.arch }}"
+
+      - name: Upload SDK package
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-${{ matrix.package_platform }}-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Create GitHub Release
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download SDK packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sdk-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

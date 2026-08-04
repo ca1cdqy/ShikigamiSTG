@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<head>
+  <meta charset="UTF-8">
+  <title>ShikigamiSTG</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="C++23 Touhou-style shooting game framework">
+  <link rel="stylesheet" href="//cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css">
+</head>
+<body>
+  <div id="app">Loading…</div>
+  <script>
+    window.$docsify = {
+      name: 'ShikigamiSTG',
+      nameLink: '/',
+      homepage: 'index.md',
+      loadSidebar: true,
+      loadNavbar: true,
+      mergeNavbar: true,
+      subMaxLevel: 3,
+      auto2top: true,
+      search: {
+        maxAge: 86400000,
+        paths: 'auto',
+        placeholder: { '/en/': 'Search', '/': '搜索' },
+        noData:      { '/en/': 'No results.', '/': '未找到结果' },
+        depth: 6,
+      },
+      alias: {
+        '/zh/.*/_sidebar.md': '/zh/_sidebar.md',
+        '/en/.*/_sidebar.md': '/en/_sidebar.md',
+      },
+    };
+  </script>
+  <script>
+    function redirectDoxygenRoute() {
+      const route = window.location.hash
+        .replace(/^#/, '')
+        .replace(/\?.*$/, '');
+      if (route === '/api' ||
+          route === '/api/' ||
+          route === '/api/index' ||
+          route === '/api/index.md') {
+        const apiUrl = new URL('api/index.html', document.baseURI);
+        window.location.replace(apiUrl.href);
+      }
+    }
+    window.addEventListener('hashchange', redirectDoxygenRoute);
+    redirectDoxygenRoute();
+  </script>
+  <!-- docsify core -->
+  <script src="//cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
+  <!-- plugins -->
+  <script src="//cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/docsify@4/lib/plugins/zoom-image.min.js"></script>
+  <!-- syntax highlighting -->
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/prism-cpp.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/prism-lua.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
+</body>
+</html>

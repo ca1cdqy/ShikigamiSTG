@@ -1,5 +1,8 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif
 #include <shiki/audio/audio_manager.h>
 #include <shiki/frontend/realtime.h>
 #include <shiki/render/renderer.h>
@@ -20,9 +23,9 @@ Realtime::Realtime(Realtime &&other) noexcept
       isInitialized_(other.isInitialized_), deltaTime_(other.deltaTime_),
       fps_(other.fps_), lastFrameTime_(other.lastFrameTime_),
       frameCount_(other.frameCount_), fpsTimer_(other.fpsTimer_),
-      window_(other.window_), gpuDevice_(other.gpuDevice_) {
+      window_(other.window_), backendHandle_(other.backendHandle_) {
 	other.window_ = nullptr;
-	other.gpuDevice_ = nullptr;
+	other.backendHandle_ = nullptr;
 	other.isRunning_ = false;
 	other.isInitialized_ = false;
 }
@@ -39,9 +42,9 @@ Realtime &Realtime::operator=(Realtime &&other) noexcept {
 		frameCount_ = other.frameCount_;
 		fpsTimer_ = other.fpsTimer_;
 		window_ = other.window_;
-		gpuDevice_ = other.gpuDevice_;
+		backendHandle_ = other.backendHandle_;
 		other.window_ = nullptr;
-		other.gpuDevice_ = nullptr;
+		other.backendHandle_ = nullptr;
 		other.isRunning_ = false;
 		other.isInitialized_ = false;
 	}
@@ -58,35 +61,16 @@ bool Realtime::initialize() {
 		return false;
 	}
 
+	uint64_t windowFlags = SDL_WINDOW_RESIZABLE;
+#if defined(__EMSCRIPTEN__)
+	// The WebGL2 backend needs an OpenGL (ES) window.
+	windowFlags |= SDL_WINDOW_OPENGL;
+#endif
 	window_ = SDL_CreateWindow(config_.title.c_str(), config_.width,
-	                           config_.height, SDL_WINDOW_RESIZABLE);
+	                           config_.height, windowFlags);
 
 	if (!window_) {
 		spdlog::error("SDL_CreateWindow failed: {}", SDL_GetError());
-		SDL_Quit();
-		return false;
-	}
-
-#if defined(NDEBUG)
-	constexpr bool gpuDebugMode = false;
-#else
-	constexpr bool gpuDebugMode = true;
-#endif
-#if defined(_WIN32)
-	gpuDevice_ = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_DXBC |
-	                                     SDL_GPU_SHADERFORMAT_DXIL,
-	                                 gpuDebugMode, nullptr);
-#elif defined(__APPLE__)
-	gpuDevice_ = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_METALLIB,
-	                                 gpuDebugMode, nullptr);
-#else
-	gpuDevice_ =
-	    SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, gpuDebugMode, nullptr);
-#endif
-	if (!gpuDevice_) {
-		spdlog::error("SDL_CreateGPUDevice failed: {}", SDL_GetError());
-		SDL_DestroyWindow(static_cast<SDL_Window *>(window_));
-		window_ = nullptr;
 		SDL_Quit();
 		return false;
 	}
@@ -96,11 +80,54 @@ bool Realtime::initialize() {
 	config_.width = w;
 	config_.height = h;
 
-	if (!SDL_ClaimWindowForGPUDevice(static_cast<SDL_GPUDevice *>(gpuDevice_),
+#if defined(__EMSCRIPTEN__)
+	// Create a WebGL2 (OpenGL ES 3.0) context for the native renderer.
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+	SDL_GLContext glContext =
+	    SDL_GL_CreateContext(static_cast<SDL_Window *>(window_));
+	if (!glContext) {
+		spdlog::error("SDL_GL_CreateContext failed: {}", SDL_GetError());
+		SDL_DestroyWindow(static_cast<SDL_Window *>(window_));
+		window_ = nullptr;
+		SDL_Quit();
+		return false;
+	}
+	SDL_GL_MakeCurrent(static_cast<SDL_Window *>(window_), glContext);
+	backendHandle_ = glContext;
+	SDL_GL_SetSwapInterval(config_.vsync ? 1 : 0);
+#else
+#if defined(NDEBUG)
+	constexpr bool gpuDebugMode = false;
+#else
+	constexpr bool gpuDebugMode = true;
+#endif
+#if defined(_WIN32)
+	backendHandle_ = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_DXBC |
+	                                         SDL_GPU_SHADERFORMAT_DXIL,
+	                                     gpuDebugMode, nullptr);
+#elif defined(__APPLE__)
+	backendHandle_ = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_METALLIB,
+	                                     gpuDebugMode, nullptr);
+#else
+	backendHandle_ =
+	    SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, gpuDebugMode, nullptr);
+#endif
+	if (!backendHandle_) {
+		spdlog::error("SDL_CreateGPUDevice failed: {}", SDL_GetError());
+		SDL_DestroyWindow(static_cast<SDL_Window *>(window_));
+		window_ = nullptr;
+		SDL_Quit();
+		return false;
+	}
+	auto *gpuDevice = static_cast<SDL_GPUDevice *>(backendHandle_);
+
+	if (!SDL_ClaimWindowForGPUDevice(gpuDevice,
 	                                 static_cast<SDL_Window *>(window_))) {
 		spdlog::error("SDL_ClaimWindowForGPUDevice failed: {}", SDL_GetError());
-		SDL_DestroyGPUDevice(static_cast<SDL_GPUDevice *>(gpuDevice_));
-		gpuDevice_ = nullptr;
+		SDL_DestroyGPUDevice(gpuDevice);
+		backendHandle_ = nullptr;
 		SDL_DestroyWindow(static_cast<SDL_Window *>(window_));
 		window_ = nullptr;
 		SDL_Quit();
@@ -110,17 +137,23 @@ bool Realtime::initialize() {
 		spdlog::warn("Failed to configure GPU present mode: {}",
 		             SDL_GetError());
 	}
-	if (!SDL_SetGPUAllowedFramesInFlight(
-	        static_cast<SDL_GPUDevice *>(gpuDevice_), 3)) {
+	if (!SDL_SetGPUAllowedFramesInFlight(gpuDevice, 3)) {
 		spdlog::warn("Failed to set GPU frames in flight: {}", SDL_GetError());
 	}
+#endif
 
 	renderer_ = std::make_unique<Renderer>();
-	if (!renderer_->initialize(window_, gpuDevice_)) {
+	if (!renderer_->initialize(window_, backendHandle_)) {
 		spdlog::error("Renderer initialization failed!");
 		renderer_.reset();
-		SDL_DestroyGPUDevice(static_cast<SDL_GPUDevice *>(gpuDevice_));
-		gpuDevice_ = nullptr;
+		if (backendHandle_) {
+#if defined(__EMSCRIPTEN__)
+			SDL_GL_DestroyContext(static_cast<SDL_GLContext>(backendHandle_));
+#else
+			SDL_DestroyGPUDevice(static_cast<SDL_GPUDevice *>(backendHandle_));
+#endif
+			backendHandle_ = nullptr;
+		}
 		SDL_DestroyWindow(static_cast<SDL_Window *>(window_));
 		window_ = nullptr;
 		SDL_Quit();
@@ -133,7 +166,7 @@ bool Realtime::initialize() {
 	}
 
 	resourceManager_ = std::make_unique<ResourceManager>();
-	resourceManager_->setDevice(gpuDevice_);
+	resourceManager_->setDevice(backendHandle_);
 	if (!resourceManager_->initialize()) {
 		spdlog::warn("ResourceManager initialization failed - continuing "
 		             "without resource manager");
@@ -158,9 +191,13 @@ void Realtime::shutdown() {
 	renderer_.reset();
 	audio_.reset();
 
-	if (gpuDevice_) {
-		SDL_DestroyGPUDevice(static_cast<SDL_GPUDevice *>(gpuDevice_));
-		gpuDevice_ = nullptr;
+	if (backendHandle_) {
+#if defined(__EMSCRIPTEN__)
+		SDL_GL_DestroyContext(static_cast<SDL_GLContext>(backendHandle_));
+#else
+		SDL_DestroyGPUDevice(static_cast<SDL_GPUDevice *>(backendHandle_));
+#endif
+		backendHandle_ = nullptr;
 	}
 
 	if (window_) {
@@ -181,35 +218,57 @@ void Realtime::run(const UpdateCallback &update, const RenderCallback &render) {
 	isRunning_ = true;
 	lastFrameTime_ = SDL_GetPerformanceCounter();
 
+#if defined(__EMSCRIPTEN__)
+	storedUpdate_ = update;
+	storedRender_ = render;
+	emscripten_set_main_loop_arg(wasmMainLoop, this, 0, 1);
+#else
 	while (isRunning_) {
-		processEvents();
+		runFrame(update, render);
+	}
+#endif
+}
 
-		calculateDeltaTime();
+void Realtime::runFrame(const UpdateCallback &update,
+                        const RenderCallback &render) {
+	processEvents();
 
-		if (renderer_) {
-			renderer_->beginFrame();
-			renderer_->clear({0.2f, 0.2f, 0.2f, 1.0f});
-		}
+	calculateDeltaTime();
 
-		update(deltaTime_);
+	if (renderer_) {
+		renderer_->beginFrame();
+		renderer_->clear({0.2f, 0.2f, 0.2f, 1.0f});
+	}
 
-		render(deltaTime_);
+	update(deltaTime_);
 
-		if (renderer_) {
-			renderer_->endFrame();
-		}
+	render(deltaTime_);
 
-		limitFrameRate();
+	if (renderer_) {
+		renderer_->endFrame();
+	}
 
-		frameCount_++;
-		fpsTimer_ += deltaTime_;
-		if (fpsTimer_ >= 1.0f) {
-			fps_ = static_cast<float>(frameCount_) / fpsTimer_;
-			frameCount_ = 0;
-			fpsTimer_ = 0.0f;
-		}
+	limitFrameRate();
+
+	frameCount_++;
+	fpsTimer_ += deltaTime_;
+	if (fpsTimer_ >= 1.0f) {
+		fps_ = static_cast<float>(frameCount_) / fpsTimer_;
+		frameCount_ = 0;
+		fpsTimer_ = 0.0f;
 	}
 }
+
+#if defined(__EMSCRIPTEN__)
+void Realtime::wasmMainLoop(void *opaque) {
+	auto *frontend = static_cast<Realtime *>(opaque);
+	frontend->runFrame(frontend->storedUpdate_, frontend->storedRender_);
+	if (!frontend->isRunning_) {
+		emscripten_cancel_main_loop();
+		emscripten_force_exit(0);
+	}
+}
+#endif
 
 void Realtime::stop() { isRunning_ = false; }
 
@@ -237,20 +296,26 @@ void Realtime::setFullscreen(bool fullscreen) {
 
 void Realtime::setVSync(bool enabled) {
 	config_.vsync = enabled;
-	if (isInitialized_) {
-		applyPresentMode();
+	if (!isInitialized_ || !backendHandle_) {
+		return;
 	}
+#if defined(__EMSCRIPTEN__)
+	SDL_GL_SetSwapInterval(enabled ? 1 : 0);
+#else
+	applyPresentMode();
+#endif
 }
 
 void Realtime::setTargetFps(int targetFps) {
 	config_.targetFps = std::max(0, targetFps);
 }
 
+#if !defined(__EMSCRIPTEN__)
 bool Realtime::applyPresentMode() {
-	if (!gpuDevice_ || !window_) {
+	if (!backendHandle_ || !window_) {
 		return false;
 	}
-	auto *device = static_cast<SDL_GPUDevice *>(gpuDevice_);
+	auto *device = static_cast<SDL_GPUDevice *>(backendHandle_);
 	auto *window = static_cast<SDL_Window *>(window_);
 	const SDL_GPUPresentMode mode = config_.vsync
 	                                    ? SDL_GPU_PRESENTMODE_VSYNC
@@ -263,6 +328,7 @@ bool Realtime::applyPresentMode() {
 	return SDL_SetGPUSwapchainParameters(
 	    device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
 }
+#endif // !defined(__EMSCRIPTEN__)
 
 Renderer *Realtime::getRenderer() const { return renderer_.get(); }
 

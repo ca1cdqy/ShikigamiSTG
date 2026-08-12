@@ -38,8 +38,9 @@ struct Vertex {
  * Immediate-mode 2D renderer with a compile-time selected backend.
  *
  * Desktop builds use the SDL3 GPU API (Direct3D 12, Metal, or Vulkan).
- * Draw calls are batched by texture and blend mode before submission. The
- * backend switch is resolved at compile time, so there is no virtual
+ * WebAssembly builds use a native WebGL2 backend that mirrors the desktop
+ * batching architecture. The public API is identical on every platform and
+ * the backend switch is resolved at compile time, so there is no virtual
  * dispatch or runtime indirection.
  *
  * Usage pattern per frame:
@@ -225,6 +226,22 @@ class Renderer {
 	};
 	std::vector<SpriteDrawInfo> spriteDraws_;
 
+#if defined(__EMSCRIPTEN__)
+	/// WebGL2 backend state (src/render/renderer_webgl.cpp).
+	void applyPendingClear();
+	void flushBatch();
+	bool createShadersAndBuffers();
+
+	unsigned int webglProgram_ = 0;
+	unsigned int webglVertexShader_ = 0;
+	unsigned int webglFragmentShader_ = 0;
+	unsigned int webglVao_ = 0;
+	unsigned int webglVbo_ = 0;
+	unsigned int webglIbo_ = 0;
+	unsigned int webglWhiteTexture_ = 0;
+	int webglUniformTexture_ = -1;
+	bool webglNeedsClear_ = true;
+#else
 	/// SDL_GPU backend state (src/render/renderer.cpp).
 	SDL_GPUDevice *gpuDevice_ = nullptr;
 	void flushBatch();
@@ -244,6 +261,7 @@ class Renderer {
 	SDL_GPUGraphicsPipeline *pipeline_ = nullptr;
 	SDL_GPUGraphicsPipeline *additivePipeline_ = nullptr;
 	SDL_GPUTexture *defaultTexture_ = nullptr; // Default white texture
+#endif
 };
 
 } // namespace shiki

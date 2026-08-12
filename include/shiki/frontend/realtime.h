@@ -117,7 +117,15 @@ class Realtime final {
 	void processEvents();
 	void calculateDeltaTime();
 	void limitFrameRate();
+	/** Executes one complete event/update/render iteration. */
+	void runFrame(const UpdateCallback &update, const RenderCallback &render);
+#if !defined(__EMSCRIPTEN__)
 	bool applyPresentMode();
+#endif
+#if defined(__EMSCRIPTEN__)
+	/** Emscripten main-loop trampoline; opaque is a Realtime*. */
+	static void wasmMainLoop(void *opaque);
+#endif
 
 	RealtimeConfig config_;
 	bool isRunning_ = false;
@@ -132,7 +140,13 @@ class Realtime final {
 
 	// SDL
 	void *window_ = nullptr;
-	void *gpuDevice_ = nullptr;
+	/// Opaque presentation backend handle: SDL_GPUDevice* on desktop,
+	/// SDL_GLContext on web builds.
+	void *backendHandle_ = nullptr;
+
+	/// Callbacks kept alive for the web main-loop trampoline.
+	UpdateCallback storedUpdate_;
+	RenderCallback storedRender_;
 
 	/// Subsystems
 	std::unique_ptr<::shiki::Renderer> renderer_;

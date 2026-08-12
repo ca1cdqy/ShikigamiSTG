@@ -30,7 +30,15 @@ option_end()
 
 -- Package dependencies.
 add_requires("libsdl3", {configs = {shared = false}})
-add_requires("openal-soft", {configs = {shared = true}})
+if not is_plat("wasm") then
+    -- Emscripten ships its own OpenAL implementation backed by WebAudio.
+    add_requires("openal-soft", {configs = {shared = true}})
+end
+-- Translates the single HLSL shader source to GLSL ES and MSL at build time.
+-- Web builds reuse the generated outputs under build/shaders instead.
+if not is_plat("wasm") then
+    add_requires("spirv-cross")
+end
 add_requires("freetype", {configs = {shared = false}})
 add_requires("glm")
 add_requires("spdlog")
@@ -38,8 +46,15 @@ add_requires("stb")
 add_requires("nlohmann_json")
 add_requires("catch2")
 
+local function add_runtime_packages()
+    add_packages("libsdl3", "freetype", "glm", "spdlog", "stb", "nlohmann_json")
+    if not is_plat("wasm") then
+        add_packages("openal-soft")
+    end
+end
+
 local function configure_shiki_library()
-    add_packages("libsdl3", "openal-soft", "freetype", "glm", "spdlog", "stb", "nlohmann_json")
+    add_runtime_packages()
     add_includedirs("include", {public = true})
     add_files("src/**/*.cpp")
     add_headerfiles("include/(**/*.h)")
@@ -91,24 +106,47 @@ target("shiki_example_runtime")
 target("th06")
     set_kind("binary")
     add_deps("shiki_example_runtime")
-    add_packages("libsdl3", "openal-soft", "freetype", "glm", "spdlog", "stb", "nlohmann_json")
+    add_runtime_packages()
+    if not is_plat("wasm") then
+        -- Build-time HLSL -> GLSL/MSL translation via SPIRV-Cross.
+        add_packages("spirv-cross")
+    end
     add_files("examples/th06/src/*.cpp")
     add_includedirs("include")
     add_defines("SDL_MAIN_HANDLED")
     set_rundir("$(builddir)/$(plat)/$(arch)/$(mode)")
     after_build(function (target) deploy_openal_dll(target, os, path) end)
+    if is_plat("wasm") then
+        -- Ship the same asset folder used by desktop builds inside the
+        -- Emscripten virtual filesystem. The SDL_Renderer backend needs no
+        -- shader bytecode; the host CJK font is preloaded for text rendering.
+        set_policy("check.auto_ignore_flags", false)
+        add_ldflags("-sALLOW_MEMORY_GROWTH=1", "-sUSE_SDL=0",
+                    "-sMAX_WEBGL_VERSION=2",
+                    "--preload-file=build/windows/x64/release/assets@/assets",
+                    "--preload-file=build/shaders@/shaders")
+        local host_font = "C:/Windows/Fonts/msgothic.ttc"
+        if os.isfile(host_font) then
+            add_ldflags("--preload-file=" .. host_font .. "@/fonts/msgothic.ttc")
+        end
+    end
 
-    -- Compile shaders for the host GPU backend.
+    -- Compile the single HLSL shader source into every backend format:
+    -- DXIL (D3D12), SPIR-V (Vulkan), GLSL ES (WebGL2), and MSL (Metal).
+    -- The wasm target consumes the generated GLSL ES files via preload.
     before_build(function (target)
         import("net.http")
 
-        local dxc_dir = path.join(os.projectdir(), "build", "dxc")
         local shader_dir = path.join(os.projectdir(), "assets", "shaders")
-        local output_dir = path.join(target:targetdir(), "shaders")
+        local output_dir = path.join(os.projectdir(), "build", "shaders")
         os.mkdir(output_dir)
         local vert_src = path.join(shader_dir, "sprite.vert.hlsl")
         local frag_src = path.join(shader_dir, "sprite.frag.hlsl")
+        local out = function (name)
+            return path.join(output_dir, name)
+        end
 
+        local dxc_dir = path.join(os.projectdir(), "build", "dxc")
         local function download_dxc()
             local dxc
             if is_host("windows") then
@@ -180,6 +218,95 @@ target("th06")
             print("Compiled shader: " .. output)
         end
 
+        local function find_spirv_cross()
+            local pattern = is_host("windows") and "spirv-cross.exe" or
+                                "spirv-cross"
+            local roots = {}
+            local globaldir = os.getenv("XMAKE_GLOBALDIR")
+            if globaldir and #globaldir > 0 then
+                table.insert(roots, globaldir)
+            end
+            if os.getenv("LOCALAPPDATA") then
+                table.insert(roots, path.join(os.getenv("LOCALAPPDATA"),
+                                              ".xmake"))
+            end
+            local home = os.getenv("USERPROFILE") or os.getenv("HOME")
+            if home then
+                table.insert(roots, path.join(home, ".xmake"))
+            end
+            for _, root in ipairs(roots) do
+                local root_path =
+                    path.join(root, "packages", "s", "spirv-cross")
+                for _, candidate in ipairs(os.files(path.join(
+                        root_path, "**", "bin", pattern))) do
+                    if os.isfile(candidate) then
+                        return candidate
+                    end
+                end
+            end
+            return nil
+        end
+
+        local dxc = download_dxc()
+        if is_host("windows") then
+            compile_dxc(dxc, vert_src, "vs_6_0", out("sprite.vert.dxil"), false)
+            compile_dxc(dxc, frag_src, "ps_6_0", out("sprite.frag.dxil"), false)
+        end
+        compile_dxc(dxc, vert_src, "vs_6_0", out("sprite.vert.spv"), true)
+        compile_dxc(dxc, frag_src, "ps_6_0", out("sprite.frag.spv"), true)
+
+        local spirv_cross = find_spirv_cross()
+        if not spirv_cross then
+            if target:is_plat("wasm") then
+                print("SPIRV-Cross not found; reusing existing shaders in " ..
+                      "build/shaders (run a desktop build once to generate them)")
+                return
+            end
+            raise("SPIRV-Cross not found. Install it with: xmake require spirv-cross")
+        end
+
+        -- WebGL2 consumes GLSL ES 3.00 (--es --version 300). GLSL ES 3.00
+        -- links varyings by name, so rename the vertex outputs and fragment
+        -- inputs at each location to the same identifiers. The locations
+        -- follow the HLSL TEXCOORD0..4 semantics: 0=color, 1=uv,
+        -- 2=fogColor, 3=fogFactor.
+        local glsl_vert_renames = {
+            "--rename-interface-variable", "out", "0", "vColor",
+            "--rename-interface-variable", "out", "1", "vUV",
+            "--rename-interface-variable", "out", "2", "vFogColor",
+            "--rename-interface-variable", "out", "3", "vFogFactor",
+        }
+        local glsl_frag_renames = {
+            "--rename-interface-variable", "in", "0", "vColor",
+            "--rename-interface-variable", "in", "1", "vUV",
+            "--rename-interface-variable", "in", "2", "vFogColor",
+            "--rename-interface-variable", "in", "3", "vFogFactor",
+        }
+        os.runv(spirv_cross, table.join(
+            {out("sprite.vert.spv"), "--es", "--version", "300", "--output",
+             out("sprite.vert.glsl"), "--stage", "vert"}, glsl_vert_renames))
+        os.runv(spirv_cross, table.join(
+            {out("sprite.frag.spv"), "--es", "--version", "300", "--output",
+             out("sprite.frag.glsl"), "--stage", "frag"}, glsl_frag_renames))
+        local fragment_glsl = io.readfile(out("sprite.frag.glsl"))
+        if fragment_glsl then
+            -- gsub returns the string and the substitution count; wrap in
+            -- parens so only the string is forwarded to writefile.
+            io.writefile(out("sprite.frag.glsl"),
+                         (fragment_glsl:gsub(
+                             "SPIRV_Cross_CombinedspriteTexturespriteSampler",
+                             "uSprite")))
+        end
+
+        -- Metal uses the generated MSL; macOS compiles the metallib.
+        os.runv(spirv_cross, {out("sprite.vert.spv"), "--msl",
+                               "--rename-entry-point", "main", "spriteVertex",
+                               "vert", "--output", out("sprite.vert.metal"),
+                               "--stage", "vert"})
+        os.runv(spirv_cross, {out("sprite.frag.spv"), "--msl",
+                               "--rename-entry-point", "main", "spriteFragment",
+                               "frag", "--output", out("sprite.frag.metal"),
+                               "--stage", "frag"})
         if is_host("macosx") then
             local function compile_metal(source, output, entry)
                 local air = output .. ".air"
@@ -188,38 +315,27 @@ target("th06")
                 os.runv("xcrun", {"-sdk", "macosx", "metallib", air, "-o",
                                    output})
                 os.rm(air)
-                print("Compiled Metal library: " .. output .. " (" .. entry .. ")")
+                print("Compiled Metal library: " .. output .. " (" .. entry ..
+                      ")")
             end
-            compile_metal(path.join(shader_dir, "sprite.vert.metal"),
-                          path.join(output_dir, "sprite.vert.metallib"),
+            compile_metal(out("sprite.vert.metal"), out("sprite.vert.metallib"),
                           "spriteVertex")
-            compile_metal(path.join(shader_dir, "sprite.frag.metal"),
-                          path.join(output_dir, "sprite.frag.metallib"),
+            compile_metal(out("sprite.frag.metal"), out("sprite.frag.metallib"),
                           "spriteFragment")
-        else
-            local dxc = download_dxc()
-            if is_host("windows") then
-                compile_dxc(dxc, vert_src, "vs_6_0",
-                            path.join(output_dir, "sprite.vert.dxil"), false)
-                compile_dxc(dxc, frag_src, "ps_6_0",
-                            path.join(output_dir, "sprite.frag.dxil"), false)
-            end
-            compile_dxc(dxc, vert_src, "vs_6_0",
-                        path.join(output_dir, "sprite.vert.spv"), true)
-            compile_dxc(dxc, frag_src, "ps_6_0",
-                        path.join(output_dir, "sprite.frag.spv"), true)
         end
     end)
-
 -- Standalone public-API pattern example with an SDL3 presentation frontend.
 target("wave_particle")
     set_kind("binary")
     add_deps("shiki_example_runtime")
-    add_packages("libsdl3", "openal-soft", "freetype", "glm", "spdlog", "stb", "nlohmann_json")
+    add_runtime_packages()
     add_files("examples/wave_particle/src/*.cpp")
     add_includedirs("include")
     add_defines("SDL_MAIN_HANDLED")
     set_rundir("$(builddir)/$(plat)/$(arch)/$(mode)")
+    if is_plat("wasm") then
+        add_ldflags("-sALLOW_MEMORY_GROWTH=1", "-sUSE_SDL=0")
+    end
     after_build(function (target) deploy_openal_dll(target, os, path) end)
 
 -- Add the test target when test sources are present.
@@ -227,7 +343,8 @@ if os.isdir("tests") and #os.files("tests/*.cpp") > 0 then
     target("tests")
         set_kind("binary")
         add_deps("shiki")
-        add_packages("catch2", "libsdl3", "openal-soft", "freetype", "glm", "spdlog", "stb", "nlohmann_json")
+        add_packages("catch2")
+        add_runtime_packages()
         add_files("tests/*.cpp")
         if not has_config("asset_tests") then
             remove_files("tests/test_ecl_runtime.cpp")
@@ -293,7 +410,7 @@ task("docs")
 target("bench")
     set_kind("binary")
     add_deps("shiki")
-    add_packages("libsdl3", "openal-soft", "freetype", "glm", "spdlog", "stb", "nlohmann_json")
+    add_runtime_packages()
     add_files("bench/*.cpp")
     add_includedirs("include")
     add_defines("SDL_MAIN_HANDLED")

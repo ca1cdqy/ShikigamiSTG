@@ -1,3 +1,4 @@
+#include "shift_jis_table.h"
 #include "th06_effect_manager.h"
 #include "th06_game_state.h"
 #include "th06_menu_anm.h"
@@ -21,11 +22,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-#ifdef _WIN32
-#define NOMINMAX
-#include <Windows.h>
-#endif
 
 void preloadSpriteAtlas(shiki::ResourceManager *resourceManager,
                         const std::string &atlasName) {
@@ -155,27 +151,85 @@ bool loadTH06Dialogue(TH06DialogueState &dialogue,
 }
 
 std::string eclTextToUtf8(const std::string &text) {
-#ifdef _WIN32
 	if (text.empty())
 		return {};
-	const int wideLength = MultiByteToWideChar(
-	    932, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-	if (wideLength <= 0)
-		return text;
-	std::wstring wide(static_cast<size_t>(wideLength), L'\0');
-	MultiByteToWideChar(932, 0, text.data(), static_cast<int>(text.size()),
-	                    wide.data(), wideLength);
-	const int utf8Length = WideCharToMultiByte(
-	    CP_UTF8, 0, wide.data(), wideLength, nullptr, 0, nullptr, nullptr);
-	if (utf8Length <= 0)
-		return text;
-	std::string utf8(static_cast<size_t>(utf8Length), '\0');
-	WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLength, utf8.data(),
-	                    utf8Length, nullptr, nullptr);
+
+	std::string utf8;
+	utf8.reserve(text.size() * 2);
+	const auto appendCodepoint = [&utf8](uint32_t codepoint) {
+		if (codepoint < 0x80) {
+			utf8 += static_cast<char>(codepoint);
+		} else if (codepoint < 0x800) {
+			utf8 += static_cast<char>(0xC0 | (codepoint >> 6));
+			utf8 += static_cast<char>(0x80 | (codepoint & 0x3F));
+		} else if (codepoint < 0x10000) {
+			utf8 += static_cast<char>(0xE0 | (codepoint >> 12));
+			utf8 += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+			utf8 += static_cast<char>(0x80 | (codepoint & 0x3F));
+		} else {
+			utf8 += static_cast<char>(0xF0 | (codepoint >> 18));
+			utf8 += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+			utf8 += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+			utf8 += static_cast<char>(0x80 | (codepoint & 0x3F));
+		}
+	};
+	const auto leadIndex = [](unsigned char byte) -> int {
+		if (byte >= 0x81 && byte <= 0x9F)
+			return byte - 0x81;
+		if (byte >= 0xE0 && byte <= 0xEA)
+			return 31 + (byte - 0xE0);
+		if (byte == 0xED)
+			return 42;
+		if (byte == 0xEE)
+			return 43;
+		if (byte >= 0xFA && byte <= 0xFC)
+			return 44 + (byte - 0xFA);
+		return -1;
+	};
+	const auto trailIndex = [](unsigned char byte) -> int {
+		if (byte >= 0x40 && byte <= 0x7E)
+			return byte - 0x40;
+		if (byte >= 0x80 && byte <= 0xFC)
+			return 63 + (byte - 0x80);
+		return -1;
+	};
+	constexpr int TRAIL_COUNT = 188;
+
+	// ECL stores strings as raw CP932 (Shift-JIS) bytes on every platform;
+	// the Windows API path used by the old implementation is unavailable on
+	// wasm, so decode through the generated table instead.
+	for (size_t index = 0; index < text.size(); ++index) {
+		const unsigned char lead = static_cast<unsigned char>(text[index]);
+		if (lead < 0x80) {
+			appendCodepoint(lead);
+			continue;
+		}
+		// Half-width katakana is a single CP932 byte (A1-DF).
+		if (lead >= 0xA1 && lead <= 0xDF) {
+			appendCodepoint(0xFF61 + (lead - 0xA1));
+			continue;
+		}
+		if (index + 1 >= text.size()) {
+			appendCodepoint(0xFFFD);
+			break;
+		}
+		const unsigned char trailByte =
+		    static_cast<unsigned char>(text[index + 1]);
+		const int leadSlot = leadIndex(lead);
+		const int trailSlot = trailIndex(trailByte);
+		if (leadSlot >= 0 && trailSlot >= 0) {
+			const uint16_t codepoint =
+			    kShiftJisTable[leadSlot * TRAIL_COUNT + trailSlot];
+			if (codepoint != 0) {
+				appendCodepoint(codepoint);
+				++index;
+				continue;
+			}
+		}
+		appendCodepoint(0xFFFD);
+		++index;
+	}
 	return utf8;
-#else
-	return text;
-#endif
 }
 
 void startTH06Dialogue(GameState &state, int messageId) {
@@ -694,6 +748,8 @@ void drawTH06WindowUiBacking(GameState &state, shiki::Renderer *renderer,
 	const float sourceHeight = static_cast<float>(texture->getHeight());
 	const float tileWidth = sourceWidth * canvasScale;
 	const float tileHeight = sourceHeight * canvasScale;
+	// drawWindowSprite positions are window pixels, so tile the regions in
+	// their native pixel coordinates.
 	const auto fillRegion = [&](float left, float top, float width,
 	                            float height) {
 		if (width <= 0.0f || height <= 0.0f)

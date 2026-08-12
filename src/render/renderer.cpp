@@ -1,5 +1,7 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <charconv>
+#include <iterator>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -811,8 +813,15 @@ void Renderer::drawText(const std::string &text, const Vec2 &position,
 		return;
 
 	const int pixelSize = std::max(1, static_cast<int>(std::round(size)));
-	const std::string cacheKey = std::to_string(pixelSize) + ":" + text;
-	auto cached = textCache_.find(cacheKey);
+	textCacheKeyBuffer_.clear();
+	textCacheKeyBuffer_.reserve(text.size() + 16);
+	char sizeBuffer[16];
+	const auto sizeResult = std::to_chars(
+	    std::begin(sizeBuffer), std::end(sizeBuffer), pixelSize);
+	textCacheKeyBuffer_.append(sizeBuffer, sizeResult.ptr);
+	textCacheKeyBuffer_.push_back(':');
+	textCacheKeyBuffer_ += text;
+	auto cached = textCache_.find(textCacheKeyBuffer_);
 
 	if (cached == textCache_.end()) {
 		FT_Face face = static_cast<FT_Face>(defaultFontFace_);
@@ -931,7 +940,7 @@ void Renderer::drawText(const std::string &text, const Vec2 &position,
 		// and resource-lifetime coupling from cached text textures.
 		if (!texture->createFromData(width, height, pixels.data()))
 			return;
-		cached = textCache_.emplace(cacheKey, std::move(texture)).first;
+		cached = textCache_.emplace(textCacheKeyBuffer_, std::move(texture)).first;
 	}
 
 	Sprite sprite(cached->second);

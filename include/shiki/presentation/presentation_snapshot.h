@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <map>
 #include <memory>
 #include <tuple>
 #include <vector>
@@ -38,6 +37,7 @@ template <game::Component... Components> class PresentationEntry final {
 	game::EntityHandle entity_{};
 	std::tuple<const Components *...> values_;
 	template <game::Component...> friend class PresentationQuery;
+	friend class PresentationSnapshot;
 };
 
 /** A deterministic materialized query over one immutable snapshot. */
@@ -95,7 +95,7 @@ class PresentationSnapshot final {
 	struct Entity final {
 		game::EntityHandle handle{};
 		std::tuple<std::uint32_t, std::uint32_t, std::uint32_t> stableId{};
-		std::map<game::TypeKey, Value> components;
+		std::vector<Value> components;
 	};
 
 	Tick tick_{};
@@ -110,11 +110,11 @@ PresentationSnapshot::tryGet(game::EntityHandle entity,
 	const auto row = std::ranges::find(entities_, entity, &Entity::handle);
 	if (row == entities_.end())
 		return nullptr;
-	const auto value = row->components.find(token.key());
-	if (value == row->components.end() ||
-	    value->second.typeTag != &game::componentTypeTag<T>)
-		return nullptr;
-	return static_cast<const T *>(value->second.data.get());
+	for (const Value &value : row->components) {
+		if (value.typeTag == &game::componentTypeTag<T>)
+			return static_cast<const T *>(value.data.get());
+	}
+	return nullptr;
 }
 
 template <game::Component... Components>

@@ -136,3 +136,39 @@ TEST_CASE("Component registration is stable and closes before simulation",
 	CHECK(late.error().code ==
 	      static_cast<std::uint32_t>(WorldError::ComponentsLocked));
 }
+
+TEST_CASE("Presentation snapshots materialize multi-component queries",
+          "[world][component][presentation]") {
+	using namespace shiki::game;
+
+	World world;
+	constexpr ComponentFlags observable =
+	    ComponentFlags::Observable | ComponentFlags::Deterministic;
+	const auto position = world.registerComponent<Position>(
+	    {.name = "game.position.v1", .flags = observable});
+	const auto velocity = world.registerComponent<Velocity>(
+	    {.name = "game.velocity.v1", .flags = observable});
+	REQUIRE(position);
+	REQUIRE(velocity);
+	REQUIRE(world.beginTick());
+	auto commands = world.commands(CommitPhase::Flow, componentFlowSource);
+	REQUIRE(commands);
+	const auto entity = commands->spawn();
+	REQUIRE(entity);
+	REQUIRE(commands->set(*entity, *position, {12, 34}) ==
+	        CommandStatus::Accepted);
+	REQUIRE(commands->set(*entity, *velocity, {-5, 8}) ==
+	        CommandStatus::Accepted);
+	REQUIRE(world.commit(CommitPhase::Flow));
+
+	const auto snapshot = world.buildPresentationSnapshot();
+	const auto rows =
+	    snapshot.query(QueryOrder::EntityId, *position, *velocity);
+	REQUIRE(rows.size() == 1);
+	const auto &entry = *rows.begin();
+	CHECK(entry.entity() == *entity);
+	CHECK(entry.get<Position>().x == 12);
+	CHECK(entry.get<Position>().y == 34);
+	CHECK(entry.get<Velocity>().x == -5);
+	CHECK(entry.get<Velocity>().y == 8);
+}

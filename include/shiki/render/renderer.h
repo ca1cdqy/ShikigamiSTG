@@ -241,6 +241,8 @@ class Renderer {
 	void *fontLibrary_ = nullptr;
 	void *defaultFontFace_ = nullptr;
 	std::unordered_map<std::string, std::shared_ptr<Texture>> textCache_;
+	/// Reused key buffer for text cache lookups (avoids per-frame allocs).
+	std::string textCacheKeyBuffer_;
 };
 
 } // namespace shiki

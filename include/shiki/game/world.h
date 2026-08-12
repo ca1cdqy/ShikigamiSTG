@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -103,6 +104,16 @@ class World final {
   private:
 	using EntityKey = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
 	using SourceKey = std::tuple<std::uint16_t, std::uint16_t, std::uint16_t>;
+	struct EntityKeyHash final {
+		[[nodiscard]] std::size_t operator()(const EntityKey &key) const noexcept {
+			std::size_t seed = std::hash<std::uint32_t>{}(std::get<0>(key));
+			seed ^= std::hash<std::uint32_t>{}(std::get<1>(key)) +
+			        0x9e3779b9U + (seed << 6U) + (seed >> 2U);
+			seed ^= std::hash<std::uint32_t>{}(std::get<2>(key)) +
+			        0x9e3779b9U + (seed << 6U) + (seed >> 2U);
+			return seed;
+		}
+	};
 	using ArchetypeKey = std::vector<TypeKey>;
 	static constexpr std::size_t chunkCapacity = 256;
 
@@ -492,11 +503,11 @@ class World final {
 	std::uint64_t epoch_{};
 	bool tickOpen_{};
 	std::uint64_t structuralVersion_{};
-	std::map<EntityKey, EntityState> entities_;
+	std::unordered_map<EntityKey, EntityState, EntityKeyHash> entities_;
 	std::map<TypeKey, std::unique_ptr<ComponentType>> components_;
 	std::map<TypeKey, std::unique_ptr<StateValue>> states_;
 	std::map<ArchetypeKey, std::unique_ptr<Archetype>> archetypes_;
-	std::map<EntityKey, EntityLocation> locations_;
+	std::unordered_map<EntityKey, EntityLocation, EntityKeyHash> locations_;
 	std::map<std::uint32_t, ProducerState> producers_;
 	std::array<std::vector<RecordedCommand>, 3> commands_;
 	std::set<std::tuple<std::uint8_t, SourceKey>> openSources_;

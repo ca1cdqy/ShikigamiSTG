@@ -30,7 +30,7 @@ option_end()
 
 -- Package dependencies.
 add_requires("libsdl3", {configs = {shared = false}})
-add_requires("openal-soft", {configs = {shared = false}})
+add_requires("openal-soft", {configs = {shared = true}})
 add_requires("freetype", {configs = {shared = false}})
 add_requires("glm")
 add_requires("spdlog")
@@ -47,6 +47,25 @@ local function configure_shiki_library()
     set_warnings("all")
 end
 
+    -- Deploys the dynamically linked OpenAL runtime next to a finished target
+    -- so Windows can load it without a PATH change. xmake has no built-in
+    -- switch that copies dependency DLLs into the output directory; this is
+    -- the standard build-time deployment hook.
+    local function deploy_openal_dll(target, os, path)
+        local pkg = target:pkg("openal-soft")
+        if pkg then
+            local dir = pkg:installdir()
+            if dir and os.isdir(dir) then
+                for _, dll in ipairs(os.files(path.join(dir, "**", "OpenAL32.dll"))) do
+                    local destination = path.join(target:targetdir(), path.filename(dll))
+                    if not os.isfile(destination) then
+                        os.cp(dll, destination)
+                    end
+                end
+            end
+        end
+    end
+
 -- Engine library.
 target("shiki")
     if has_config("shiki_shared") then
@@ -56,6 +75,9 @@ target("shiki")
         set_kind("static")
     end
     configure_shiki_library()
+    if has_config("shiki_shared") then
+        after_build(function (target) deploy_openal_dll(target, os, path) end)
+    end
 
 -- Private static runtime used by the example executable. The public shiki
 -- target can remain shared for SDK packaging without making the example
@@ -74,6 +96,7 @@ target("th06")
     add_includedirs("include")
     add_defines("SDL_MAIN_HANDLED")
     set_rundir("$(builddir)/$(plat)/$(arch)/$(mode)")
+    after_build(function (target) deploy_openal_dll(target, os, path) end)
 
     -- Compile shaders for the host GPU backend.
     before_build(function (target)
@@ -188,6 +211,17 @@ target("th06")
         end
     end)
 
+-- Standalone public-API pattern example with an SDL3 presentation frontend.
+target("wave_particle")
+    set_kind("binary")
+    add_deps("shiki_example_runtime")
+    add_packages("libsdl3", "openal-soft", "freetype", "glm", "spdlog", "stb", "nlohmann_json")
+    add_files("examples/wave_particle/src/*.cpp")
+    add_includedirs("include")
+    add_defines("SDL_MAIN_HANDLED")
+    set_rundir("$(builddir)/$(plat)/$(arch)/$(mode)")
+    after_build(function (target) deploy_openal_dll(target, os, path) end)
+
 -- Add the test target when test sources are present.
 if os.isdir("tests") and #os.files("tests/*.cpp") > 0 then
     target("tests")
@@ -201,6 +235,7 @@ if os.isdir("tests") and #os.files("tests/*.cpp") > 0 then
         add_includedirs("include", "examples/th06/src")
         add_defines("SDL_MAIN_HANDLED")
         set_rundir("$(builddir)/$(plat)/$(arch)/$(mode)")
+        after_build(function (target) deploy_openal_dll(target, os, path) end)
 end
 
 task("docs")
@@ -252,3 +287,14 @@ task("docs")
         print("Documentation built to build/docs/.")
         print("Open build/docs/index.html in a browser to preview.")
     end)
+
+-- Engine micro-benchmarks. Use a release build for meaningful numbers:
+-- `xmake f -m release && xmake build bench && xmake run bench`.
+target("bench")
+    set_kind("binary")
+    add_deps("shiki")
+    add_packages("libsdl3", "openal-soft", "freetype", "glm", "spdlog", "stb", "nlohmann_json")
+    add_files("bench/*.cpp")
+    add_includedirs("include")
+    add_defines("SDL_MAIN_HANDLED")
+    set_rundir("$(builddir)/$(plat)/$(arch)/$(mode)")

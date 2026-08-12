@@ -307,8 +307,7 @@ presentation::PresentationSnapshot World::buildPresentationSnapshot() const {
 						continue;
 					auto value = type.copyValue(*column, row);
 					if (value != nullptr) {
-						output.components.emplace(
-						    key, presentation::PresentationSnapshot::Value{
+						output.components.emplace_back(presentation::PresentationSnapshot::Value{
 						             type.typeTag(), std::move(value)});
 					}
 				}

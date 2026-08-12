@@ -237,10 +237,9 @@ ResourceManager::getSpriteTexture(const std::string &atlasName,
 			if (atlas) {
 				const asset::SpriteFrameAsset *frame = (*atlas)->find(spriteId);
 				if (frame) {
-					const std::string cacheKey =
-					    "asset:" + std::to_string(frame->image.key.value);
-					if (const auto cached = textureCache_.find(cacheKey);
-					    cached != textureCache_.end())
+					const std::uint64_t imageKey = frame->image.key.value;
+					if (const auto cached = textureIdCache_.find(imageKey);
+					    cached != textureIdCache_.end())
 						return cached->second;
 					auto image =
 					    assetStore_->load<asset::ImageAsset>(frame->image);
@@ -248,8 +247,10 @@ ResourceManager::getSpriteTexture(const std::string &atlasName,
 						auto texture =
 						    const_cast<ResourceManager *>(this)->realize(
 						        frame->image, **image);
-						if (texture)
+						if (texture) {
+							textureIdCache_[imageKey] = *texture;
 							return *texture;
+						}
 					}
 				}
 			}
@@ -261,10 +262,16 @@ ResourceManager::getSpriteTexture(const std::string &atlasName,
 
 Result<std::shared_ptr<Texture>>
 ResourceManager::realize(asset::AssetId id, const asset::ImageAsset &source) {
+	const std::uint64_t imageKey = id.key.value;
+	if (const auto cached = textureIdCache_.find(imageKey);
+	    cached != textureIdCache_.end())
+		return cached->second;
 	const std::string cacheKey = "asset:" + std::to_string(id.key.value);
 	if (const auto cached = textureCache_.find(cacheKey);
-	    cached != textureCache_.end())
+	    cached != textureCache_.end()) {
+		textureIdCache_[imageKey] = cached->second;
 		return cached->second;
+	}
 	if (!device_)
 		return std::unexpected(Error{ErrorDomain::Presentation, 1,
 		                             "GPU device is not configured"});
@@ -276,6 +283,7 @@ ResourceManager::realize(asset::AssetId id, const asset::ImageAsset &source) {
 		return std::unexpected(Error{ErrorDomain::Presentation, 2,
 		                             "GPU texture realization failed"});
 	textureCache_[cacheKey] = texture;
+	textureIdCache_[imageKey] = texture;
 	return texture;
 }
 

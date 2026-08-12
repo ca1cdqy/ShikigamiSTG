@@ -153,6 +153,9 @@ class ResourceManager
 	/// Loaded resources retained by strong references
 	mutable std::unordered_map<std::string, std::shared_ptr<Texture>>
 	    textureCache_;
+	    /// Texture lookup by integer asset key (avoids per-frame string keys).
+	    mutable std::unordered_map<std::uint64_t, std::shared_ptr<Texture>>
+	        textureIdCache_;
 	mutable std::unordered_map<std::string, std::shared_ptr<Sound>> soundCache_;
 	mutable std::unordered_map<std::string, std::shared_ptr<Music>> musicCache_;
 

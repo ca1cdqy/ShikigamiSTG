@@ -116,19 +116,26 @@ target("th06")
     add_defines("SDL_MAIN_HANDLED")
     set_rundir("$(builddir)/$(plat)/$(arch)/$(mode)")
     after_build(function (target) deploy_openal_dll(target, os, path) end)
+    -- Asset data is packaged separately by tools/package_wasm_data.py, so
+    -- the browser build never repacks the extracted game assets. The
+    -- generated th06.data.js loader is embedded below when it exists.
+    on_load(function (target)
+        if target:plat() == "wasm" then
+            local data_js = path.join(os.projectdir(), "build", "wasm",
+                                      "wasm32", "release", "th06.data.js")
+            if os.isfile(data_js) then
+                target:add("ldflags", "--pre-js=" .. data_js)
+            else
+                print("th06.data.js not found; run: python " ..
+                      "tools/package_wasm_data.py --assets " ..
+                      "build/windows/x64/release/assets")
+            end
+        end
+    end)
     if is_plat("wasm") then
-        -- Ship the same asset folder used by desktop builds inside the
-        -- Emscripten virtual filesystem. The SDL_Renderer backend needs no
-        -- shader bytecode; the host CJK font is preloaded for text rendering.
         set_policy("check.auto_ignore_flags", false)
         add_ldflags("-sALLOW_MEMORY_GROWTH=1", "-sUSE_SDL=0",
-                    "-sMAX_WEBGL_VERSION=2",
-                    "--preload-file=build/windows/x64/release/assets@/assets",
-                    "--preload-file=build/shaders@/shaders")
-        local host_font = "C:/Windows/Fonts/msgothic.ttc"
-        if os.isfile(host_font) then
-            add_ldflags("--preload-file=" .. host_font .. "@/fonts/msgothic.ttc")
-        end
+                    "-sMAX_WEBGL_VERSION=2", "-sFORCE_FILESYSTEM=1")
     end
 
     -- Compile the single HLSL shader source into every backend format:
@@ -257,7 +264,7 @@ target("th06")
 
         local spirv_cross = find_spirv_cross()
         if not spirv_cross then
-            if target:is_plat("wasm") then
+            if target:plat() == "wasm" then
                 print("SPIRV-Cross not found; reusing existing shaders in " ..
                       "build/shaders (run a desktop build once to generate them)")
                 return

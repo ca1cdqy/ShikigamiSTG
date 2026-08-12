@@ -71,6 +71,34 @@ jobs:
       - name: Build example
         run: xmake build th06
 
+  wasm:
+    name: Build (wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+
+      - name: Configure wasm release build
+        run: xmake f -p wasm -m release -y
+
+      # The wave/particle demo needs no extracted assets and links the full
+      # engine runtime, so it compiles the WebGL2 renderer backend and the
+      # wasm frontend on every push. The TH06 example additionally requires
+      # an asset package built by tools/package_wasm_data.py, which needs
+      # the original game files and is therefore built locally only.
+      - name: Build WebGL2 demo
+        run: xmake build wave_particle
+
   documentation:
     name: Build documentation
     runs-on: ubuntu-latest

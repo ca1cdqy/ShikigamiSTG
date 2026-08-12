@@ -18,7 +18,13 @@
 
 1. 安装并激活 [Emscripten SDK](https://emscripten.org/)（`emsdk install latest && emsdk activate latest`）
 2. 配置 wasm 平台：`xmake f -p wasm -y`
-3. 构建示例：`xmake build wave_particle`、`xmake build th06`（产物位于 `build/wasm/wasm32/release/`）
-4. 在仓库根目录启动静态服务器（如 `python -m http.server 8000`），浏览器打开 `http://localhost:8000/web/`
+3. 构建无资源示例：`xmake build wave_particle`（产物位于 `build/wasm/wasm32/release/`）
+4. th06 需要先用脚本把提取的素材打包成 Emscripten 数据文件（不属于构建流程），再构建：
 
-网页版使用原生 WebGL2 后端，合批架构与桌面一致，不需要 WebGPU。桌面版保持 SDL3 GPU API；渲染器、纹理与实时前端对外只暴露一套平台无关 API，编译期自动切换后端。着色器只维护一份 HLSL 源，构建时自动翻译为各平台格式。完整步骤见 `web/README.md`。
+   ```powershell
+   python tools/package_wasm_data.py --assets build/windows/x64/release/assets
+   xmake build th06
+   ```
+5. 用 HTTP 服务 `build/wasm/wasm32/release/`（如 `python -m http.server 8000`），打开生成的 `.html` 页面。
+
+网页版使用原生 WebGL2 后端，合批架构与桌面一致，不需要 WebGPU。桌面版保持 SDL3 GPU API；渲染器、纹理与实时前端对外只暴露一套平台无关 API，编译期自动切换后端。着色器只维护一份 HLSL 源，构建时自动翻译为各平台格式。

@@ -1,4 +1,7 @@
 #include <SDL3/SDL.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -186,6 +189,60 @@ void drawProjectiles(SDL_Renderer *renderer, const DemoSession &demo,
 	}
 }
 
+struct DemoContext final {
+	SDL_Renderer *renderer{};
+	std::optional<DemoSession> demo;
+	bool running{true};
+	bool paused{false};
+	double accumulator{0.0};
+	double fixedStep{1.0 / 60.0};
+	std::uint64_t previousCounter{};
+	double frequency{1.0};
+};
+
+void frame(void *opaque) {
+	DemoContext &context = *static_cast<DemoContext *>(opaque);
+	SDL_Event event;
+	while (SDL_PollEvent(&event)) {
+		if (event.type == SDL_EVENT_QUIT)
+			context.running = false;
+		if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+			if (event.key.key == SDLK_ESCAPE)
+				context.running = false;
+			else if (event.key.key == SDLK_SPACE)
+				context.paused = !context.paused;
+			else if (event.key.key == SDLK_R) {
+				context.demo = createDemoSession();
+				context.accumulator = 0.0;
+			}
+		}
+	}
+
+	const std::uint64_t counter = SDL_GetPerformanceCounter();
+	double elapsed = static_cast<double>(counter - context.previousCounter) /
+	                 context.frequency;
+	context.previousCounter = counter;
+	elapsed = std::min(elapsed, 0.1);
+	if (!context.paused)
+		context.accumulator += elapsed;
+	while (context.demo && context.accumulator >= context.fixedStep) {
+		const shiki::Tick next{context.demo->session->tick().value + 1};
+		if (!context.demo->session->step({.tick = next})) {
+			std::cerr << "Session step failed\n";
+			context.running = false;
+			break;
+		}
+		context.accumulator -= context.fixedStep;
+	}
+
+	drawBackdrop(context.renderer);
+	if (context.demo) {
+		drawProjectiles(context.renderer, *context.demo,
+		                static_cast<float>(context.accumulator / context.fixedStep));
+	}
+	SDL_RenderPresent(context.renderer);
+}
+
 } // namespace
 
 int main() {
@@ -219,53 +276,17 @@ int main() {
 		return 1;
 	}
 
-	bool running = true;
-	bool paused = false;
-	double accumulator = 0.0;
-	constexpr double fixedStep = 1.0 / 60.0;
-	std::uint64_t previousCounter = SDL_GetPerformanceCounter();
-	const double frequency = static_cast<double>(SDL_GetPerformanceFrequency());
-	while (running) {
-		SDL_Event event;
-		while (SDL_PollEvent(&event)) {
-			if (event.type == SDL_EVENT_QUIT)
-				running = false;
-			if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
-				if (event.key.key == SDLK_ESCAPE)
-					running = false;
-				else if (event.key.key == SDLK_SPACE)
-					paused = !paused;
-				else if (event.key.key == SDLK_R) {
-					demo = createDemoSession();
-					accumulator = 0.0;
-				}
-			}
-		}
-
-		const std::uint64_t counter = SDL_GetPerformanceCounter();
-		double elapsed =
-		    static_cast<double>(counter - previousCounter) / frequency;
-		previousCounter = counter;
-		elapsed = std::min(elapsed, 0.1);
-		if (!paused)
-			accumulator += elapsed;
-		while (demo && accumulator >= fixedStep) {
-			const shiki::Tick next{demo->session->tick().value + 1};
-			if (!demo->session->step({.tick = next})) {
-				std::cerr << "Session step failed\n";
-				running = false;
-				break;
-			}
-			accumulator -= fixedStep;
-		}
-
-		drawBackdrop(renderer);
-		if (demo) {
-			drawProjectiles(renderer, *demo,
-			                static_cast<float>(accumulator / fixedStep));
-		}
-		SDL_RenderPresent(renderer);
-	}
+	DemoContext context;
+	context.renderer = renderer;
+	context.demo = std::move(demo);
+	context.previousCounter = SDL_GetPerformanceCounter();
+	context.frequency = static_cast<double>(SDL_GetPerformanceFrequency());
+#ifdef __EMSCRIPTEN__
+	emscripten_set_main_loop_arg(frame, &context, 0, 1);
+#else
+	while (context.running)
+		frame(&context);
+#endif
 
 	SDL_DestroyRenderer(renderer);
 	SDL_DestroyWindow(window);

@@ -26,3 +26,9 @@ latex/
 .VSCodeCounter/
 .agents/
 .claude/
+
+# Web (WASM) build artifacts (build outputs live under build/wasm).
+web/*.js
+web/*.wasm
+web/*.html
+!web/index.html

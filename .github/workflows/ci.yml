@@ -31,6 +31,14 @@ jobs:
         with:
           xmake-version: latest
 
+      - name: Install Linux X11/Wayland dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxext-dev libxfixes-dev libxcursor-dev \
+            libxi-dev libxrandr-dev libxrender-dev libxss-dev \
+            libxkbcommon-dev libwayland-dev xorgproto
       - name: Cache xmake packages
         uses: actions/cache@v4
         with:
@@ -40,7 +48,16 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-xmake-
 
       - name: Configure shared release build
-        run: xmake f -m release --shiki_shared=y --asset_tests=n -y
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if xmake f -m release --shiki_shared=y --asset_tests=n -y; then
+              exit 0
+            fi
+            echo "xmake configure attempt $attempt failed, retrying..."
+            sleep 5
+          done
+          exit 1
 
       - name: Build framework
         run: xmake build shiki

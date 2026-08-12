@@ -7,7 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
-// Forward declaration for SDL
+// Forward declarations for the desktop SDL_GPU backend. These must live at
+// global scope so they match the real SDL3 declarations.
 struct SDL_GPUDevice;
 struct SDL_GPUCommandBuffer;
 struct SDL_GPURenderPass;
@@ -24,7 +25,7 @@ namespace shiki {
 class Texture;
 class Sprite;
 
-/** One transformed, textured, and colored GPU vertex. */
+/** One transformed, textured, and colored vertex. */
 struct Vertex {
 	Vec2 position; ///< Position in the renderer's active coordinate space.
 	Vec4 color;    ///< Per-vertex RGBA color modulation.
@@ -33,58 +34,52 @@ struct Vertex {
 	float fogFactor = 1.0f; ///< One keeps the texture; zero selects fogColor.
 };
 
-/** Records a single queued draw operation before submission. */
-struct RenderCommand {
-	/** Identifies the GPU operation this command encodes. */
-	enum class Type {
-		DrawSprite,  ///< Batched textured quad for a Sprite.
-		DrawText,    ///< FreeType-rendered glyph sequence.
-		DrawLine,    ///< Single line segment in screen space.
-		DrawRect,    ///< Filled or stroked rectangle in screen space.
-		Clear,       ///< Full framebuffer clear.
-		SetViewport, ///< Updates the active scissor/viewport region.
-		SetBlendMode ///< Changes the active GPU pipeline blend state.
-	};
-
-	Type type;           ///< Which GPU operation this command encodes.
-	float zIndex = 0.0f; ///< Sort key within the same render pass.
-	                     /// Command-specific parameters
-};
-
 /**
- * SDL3 GPU-backed immediate-mode 2D renderer.
+ * Immediate-mode 2D renderer with a compile-time selected backend.
+ *
+ * Desktop builds use the SDL3 GPU API (Direct3D 12, Metal, or Vulkan).
+ * Draw calls are batched by texture and blend mode before submission. The
+ * backend switch is resolved at compile time, so there is no virtual
+ * dispatch or runtime indirection.
  *
  * Usage pattern per frame:
- * -# Call beginFrame() to acquire a swapchain texture.
+ * -# Call beginFrame() to acquire a render target.
  * -# Submit draw calls; they are batched by texture and blend mode.
  * -# Call endFrame() to flush all batches and present.
  *
- * The renderer is non-copyable because it owns GPU resources. Call
- * initialize() once after a window and GPU device are available.
+ * The renderer is non-copyable because it owns backend resources. Call
+ * initialize() once after a window and a backend handle are available.
  */
 class Renderer {
   public:
-	/** Creates a renderer with no allocated GPU resources. */
+	/** Creates a renderer with no allocated backend resources. */
 	Renderer();
-	/** Calls shutdown() to release any initialized GPU resources. */
+	/** Calls shutdown() to release any initialized backend resources. */
 	~Renderer();
 
-	/** Renderers cannot be copied because they own GPU resources. */
+	/** Renderers cannot be copied because they own backend resources. */
 	Renderer(const Renderer &) = delete;
 	/** Renderers cannot be copy-assigned. */
 	Renderer &operator=(const Renderer &) = delete;
 
-	/** Transfers GPU resource ownership. */
+	/** Transfers backend resource ownership. */
 	Renderer(Renderer &&) noexcept;
-	/** Releases current GPU resources, then takes ownership from other. */
+	/** Releases current backend resources, then takes ownership from other. */
 	Renderer &operator=(Renderer &&) noexcept;
 
-	/** Creates all GPU pipelines, buffers, shaders, and the default font. */
+	/**
+	 * Creates all pipelines, buffers, shaders, and the default font.
+	 *
+	 * @param window The SDL_Window* that owns the rendering surface.
+	 * @param device Opaque backend handle: an SDL_GPUDevice* on desktop or an
+	 *               SDL_GLContext on web builds.
+	 * @return True when the renderer is ready for beginFrame().
+	 */
 	bool initialize(void *window, void *device);
-	/** Releases all GPU resources and resets internal state. */
+	/** Releases all backend resources and resets internal state. */
 	void shutdown();
 
-	/** Begins a new frame and acquires a swapchain render target. */
+	/** Begins a new frame and acquires a render target. */
 	void beginFrame();
 	/** Flushes all batched draw calls and presents the rendered frame. */
 	void endFrame();
@@ -95,8 +90,14 @@ class Renderer {
 	/** Queues a Sprite draw in the playfield or window coordinate space. */
 	void drawSprite(const Sprite &sprite, float zIndex = 0.0f,
 	                bool playfieldSpace = false);
-	/** Queues a Sprite draw in window coordinate space regardless of
-	 * playfieldSpace. */
+	/**
+	 * Queues a Sprite draw in window pixel coordinates regardless of
+	 * playfieldSpace.
+	 *
+	 * Position, scale, and origin are measured in physical window pixels
+	 * (0..outputWidth, 0..outputHeight), independent of the projection and
+	 * playfield viewport. Used for UI anchored to the actual swapchain.
+	 */
 	void drawWindowSprite(const Sprite &sprite, float zIndex = 0.0f);
 
 	/**
@@ -153,7 +154,8 @@ class Renderer {
 	              const Color &color = {1.0f, 1.0f, 1.0f, 1.0f},
 	              bool playfieldSpace = false);
 
-	/** Sets the active GPU scissor and viewport region in physical pixels. */
+	/** Sets the active backend scissor and viewport region in physical pixels.
+	 */
 	void setViewport(int x, int y, int width, int height);
 	/** Updates the physical output dimensions used for projection. */
 	void setOutputSize(int width, int height);
@@ -164,24 +166,71 @@ class Renderer {
 	/** Configures the orthographic projection bounds for subsequent draws. */
 	void setProjection(float left, float right, float bottom, float top);
 
-	/** Changes the active GPU blend pipeline state. */
+	/** Changes the active blend state. */
 	void setBlendMode(BlendMode mode);
 
-	/** Returns the total number of GPU draw calls issued in the last frame. */
+	/** Returns the total number of backend draw calls issued in the last frame.
+	 */
 	[[nodiscard]] int getDrawCallCount() const { return drawCallCount_; }
 	/** Returns the total number of sprites batched in the last frame. */
 	[[nodiscard]] int getSpriteCount() const { return spriteCount_; }
 
-	/** Returns the SDL GPU device used by this renderer. */
-	[[nodiscard]] SDL_GPUDevice *getDevice() const { return device_; }
+	/**
+	 * Returns the opaque backend handle passed to initialize().
+	 *
+	 * Desktop builds return the SDL_GPUDevice*; web builds return the
+	 * SDL_GLContext. Use it only to hand the same handle to Texture uploads.
+	 */
+	[[nodiscard]] void *getDevice() const { return backend_; }
 
   private:
+	/// Common state shared by every backend.
+	bool initializeDefaultFont();
+	void *fontLibrary_ = nullptr;
+	void *defaultFontFace_ = nullptr;
+	std::unordered_map<std::string, std::shared_ptr<Texture>> textCache_;
+	/// Reused key buffer for text cache lookups (avoids per-frame allocs).
+	std::string textCacheKeyBuffer_;
+
+	int drawCallCount_ = 0;
+	int spriteCount_ = 0;
+	BlendMode currentBlendMode_ = BlendMode::Alpha;
+	Rect viewport_;
+	int outputWidth_ = 640;
+	int outputHeight_ = 480;
+	Color clearColor_ = {0.0f, 0.0f, 0.0f, 1.0f};
+	float projectionLeft_ = 0.0f;
+	float projectionRight_ = 640.0f;
+	float projectionBottom_ = 480.0f;
+	float projectionTop_ = 0.0f;
+	Rect playfieldRegion_ = {32.0f, 16.0f, 384.0f, 448.0f};
+	void *window_ = nullptr;
+	/// Opaque backend handle: SDL_GPUDevice* on desktop, SDL_GLContext on web.
+	void *backend_ = nullptr;
+
+	/// Batching state shared by the desktop GPU and web WebGL backends.
+	static constexpr size_t MAX_VERTICES = 65536;
+	static constexpr size_t MAX_INDICES = 65536;
+	std::vector<Vertex> vertices_;
+	std::vector<uint16_t> indices_;
+	/// Per-sprite draw metadata.
+	struct SpriteDrawInfo {
+		void *texture = nullptr;  // Backend texture handle, or null for white
+		uint32_t indexOffset = 0; // Offset in the index buffer
+		uint32_t indexCount = 6;  // Index count, fixed at six
+		BlendMode blendMode = BlendMode::Alpha;
+		bool playfieldSpace = false;
+		bool windowSpace = false;
+		bool repeatTexture = false;
+	};
+	std::vector<SpriteDrawInfo> spriteDraws_;
+
+	/// SDL_GPU backend state (src/render/renderer.cpp).
+	SDL_GPUDevice *gpuDevice_ = nullptr;
 	void flushBatch();
 	bool createPipeline();
 	bool createBuffers();
-	bool initializeDefaultFont();
 
-	SDL_GPUDevice *device_ = nullptr;
 	SDL_GPUCommandBuffer *commandBuffer_ = nullptr;
 	SDL_GPURenderPass *renderPass_ = nullptr;
 	SDL_GPUTexture *swapchainTexture_ = nullptr;
@@ -194,55 +243,7 @@ class Renderer {
 	SDL_GPUShader *fragmentShader_ = nullptr;
 	SDL_GPUGraphicsPipeline *pipeline_ = nullptr;
 	SDL_GPUGraphicsPipeline *additivePipeline_ = nullptr;
-	SDL_GPUBuffer *uniformBuffer_ = nullptr;   // Projection uniform buffer
 	SDL_GPUTexture *defaultTexture_ = nullptr; // Default white texture
-
-	/// Batching state
-	std::vector<RenderCommand> commandQueue_;
-	int drawCallCount_ = 0;
-	int spriteCount_ = 0;
-
-	/// Current state
-	BlendMode currentBlendMode_ = BlendMode::Alpha;
-	Rect viewport_;
-	int outputWidth_ = 640;
-	int outputHeight_ = 480;
-	Color clearColor_ = {0.0f, 0.0f, 0.0f, 1.0f};
-
-	/// Projection parameters
-	float projectionLeft_ = 0.0f;
-	float projectionRight_ = 640.0f;
-	float projectionBottom_ = 480.0f;
-	float projectionTop_ = 0.0f;
-	Rect playfieldRegion_ = {32.0f, 16.0f, 384.0f, 448.0f};
-
-	/// Window state
-	void *window_ = nullptr;
-
-	/// Vertex storage
-	static constexpr size_t MAX_VERTICES = 65536;
-	static constexpr size_t MAX_INDICES = 65536;
-	std::vector<Vertex> vertices_;
-	std::vector<uint16_t> indices_;
-
-	/// Per-sprite draw metadata
-	struct SpriteDrawInfo {
-		SDL_GPUTexture *texture =
-		    nullptr; // A null pointer selects the default white texture
-		uint32_t indexOffset = 0; // Offset in the index buffer
-		uint32_t indexCount = 6;  // Index count, fixed at six
-		BlendMode blendMode = BlendMode::Alpha;
-		bool playfieldSpace = false;
-		bool windowSpace = false;
-		bool repeatTexture = false;
-	};
-	std::vector<SpriteDrawInfo> spriteDraws_;
-
-	void *fontLibrary_ = nullptr;
-	void *defaultFontFace_ = nullptr;
-	std::unordered_map<std::string, std::shared_ptr<Texture>> textCache_;
-	/// Reused key buffer for text cache lookups (avoids per-frame allocs).
-	std::string textCacheKeyBuffer_;
 };
 
 } // namespace shiki

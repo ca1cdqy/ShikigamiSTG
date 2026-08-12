@@ -103,7 +103,7 @@ std::shared_ptr<Texture> ResourceManager::loadTexture(const std::string &path) {
 	auto texture = std::make_shared<Texture>();
 
 	if (device_) {
-		texture->setDevice(static_cast<SDL_GPUDevice *>(device_));
+		texture->setDevice(device_);
 	}
 
 	if (!texture->loadFromFile(path)) {
@@ -276,7 +276,7 @@ ResourceManager::realize(asset::AssetId id, const asset::ImageAsset &source) {
 		return std::unexpected(Error{ErrorDomain::Presentation, 1,
 		                             "GPU device is not configured"});
 	auto texture = std::make_shared<Texture>();
-	texture->setDevice(static_cast<SDL_GPUDevice *>(device_));
+	texture->setDevice(device_);
 	if (!texture->createFromData(
 	        static_cast<int>(source.width), static_cast<int>(source.height),
 	        reinterpret_cast<const std::uint8_t *>(source.rgba.data())))
